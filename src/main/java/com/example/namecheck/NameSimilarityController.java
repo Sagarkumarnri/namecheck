@@ -18,22 +18,14 @@ public class NameSimilarityController {
     private NameSimilarityService nameSimilarityService;
 
     @PostMapping("/train")
-    public ResponseEntity<String> trainModel(@RequestParam("file") MultipartFile file) {
-        try {
-            String result = nameSimilarityService.trainModel(file);
-            return ResponseEntity.ok(result);
-        } catch (IOException | TranslateException | ModelException e) {
-            return ResponseEntity.status(500).body("Training failed: " + e.getMessage());
-        }
+    public ResponseEntity<String> trainModel(@RequestParam("file") MultipartFile file) throws ModelException, TranslateException, IOException {
+        String result = nameSimilarityService.trainModel(file);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/similarity")
-    public ResponseEntity<Float> predictSimilarity(@RequestParam("name1") String name1, @RequestParam("name2") String name2) {
-        try {
-            float similarity = nameSimilarityService.predictSimilarity(name1, name2);
-            return ResponseEntity.ok(similarity);
-        } catch (IOException | TranslateException | ModelException e) {
-            return ResponseEntity.status(500).body(null);
-        }
+    public ResponseEntity<Float> predictSimilarity(@RequestParam("name1") String name1, @RequestParam("name2") String name2) throws ModelException, TranslateException, IOException {
+        float similarity = nameSimilarityService.predictSimilarity(name1, name2);
+        return ResponseEntity.ok(similarity);
     }
 }
