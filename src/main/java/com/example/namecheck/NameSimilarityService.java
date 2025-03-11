@@ -1,6 +1,9 @@
 package com.example.namecheck;
 
+import ai.djl.Application;
 import ai.djl.ModelException;
+import ai.djl.huggingface.tokenizers.Encoding;
+import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
 import ai.djl.inference.Predictor;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
@@ -16,13 +19,14 @@ import ai.djl.training.TrainingConfig;
 import ai.djl.training.dataset.ArrayDataset;
 import ai.djl.training.dataset.Batch;
 import ai.djl.training.dataset.Dataset;
-import ai.djl.training.initializer.XavierInitializer;
 import ai.djl.training.loss.Loss;
 import ai.djl.training.optimizer.Adam;
 import ai.djl.training.tracker.Tracker;
 import ai.djl.translate.TranslateException;
 import ai.djl.translate.Translator;
 import ai.djl.translate.TranslatorContext;
+import ai.djl.translate.Batchifier;
+
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVRecord;
 import org.slf4j.Logger;
@@ -30,141 +34,164 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 public class NameSimilarityService {
+
     private static final Logger logger = LoggerFactory.getLogger(NameSimilarityService.class);
+    private static final String TOKENIZER_NAME = "bert-base-uncased";  // Hugging Face tokenizer
+    private static final Path MODEL_PATH = Paths.get("src/main/resources/paraphrase-MiniLM-L6-v2.onnx"); // ONNX Model Path
+    private final HuggingFaceTokenizer tokenizer;
 
-    // 🔹 Load ONNX Model Path
-    private Path getModelPath() throws IOException {
-        return Paths.get("src/main/resources/trained_name_similarity.onnx");
+    public NameSimilarityService() {
+        this.tokenizer = HuggingFaceTokenizer.newInstance(TOKENIZER_NAME);
     }
 
-    // 🔹 Simple Tokenization: Convert Characters to Normalized Floats
-    private float[] tokenize(String text) {
-        float[] tokens = new float[128];
-        char[] chars = text.toLowerCase().toCharArray();
-        for (int i = 0; i < Math.min(chars.length, tokens.length); i++) {
-            tokens[i] = chars[i] / 255.0f;
+    /**
+     * Tokenizes names using Hugging Face tokenizer and converts to float[][].
+     */
+    private float[][] tokenizeNames(String name1, String name2) {
+        Encoding encoding1 = tokenizer.encode(name1);
+        Encoding encoding2 = tokenizer.encode(name2);
+
+        // Convert long[] to float[] for NDArray compatibility
+        return new float[][]{
+                convertToFloatArray(encoding1.getIds()),
+                convertToFloatArray(encoding2.getIds())
+        };
+    }
+
+    /**
+     * Converts long[] to float[] (required for NDArray creation).
+     */
+    private float[] convertToFloatArray(long[] input) {
+        float[] output = new float[input.length];
+        for (int i = 0; i < input.length; i++) {
+            output[i] = (float) input[i];
         }
-        return tokens;
+        return output;
     }
 
-
-    private float[][] processInput(String name1, String name2) {
-        return new float[][]{tokenize(name1), tokenize(name2)};
-    }
-
-
-    public String trainModel(MultipartFile file) throws IOException, TranslateException, ModelException {
-        Path modelPath = getModelPath();
-        try (NDManager manager = NDManager.newBaseManager()) {
-
-
-            List<float[][]> namePairs = new ArrayList<>();
-            List<Float> similarityScores = new ArrayList<>();
-
-            Reader reader = new InputStreamReader(file.getInputStream());
-            Iterable<CSVRecord> records = CSVFormat.DEFAULT.withFirstRecordAsHeader().parse(reader);
-
-            for (CSVRecord record : records) {
-                String name1 = record.get("Name1");
-                String name2 = record.get("Name2");
-                float similarity = Float.parseFloat(record.get("Similarity"));
-
-                float[][] input = processInput(name1, name2);
-                namePairs.add(input);
-                similarityScores.add(similarity);
-            }
-
-             NDArray[] data = new NDArray[namePairs.size()];
-            NDArray[] labels = new NDArray[similarityScores.size()];
-
-            for (int i = 0; i < namePairs.size(); i++) {
-                data[i] = manager.create(namePairs.get(i));
-                labels[i] = manager.create(new float[]{similarityScores.get(i)});
-            }
-
-            // Create dataset
-            Dataset dataset = new ArrayDataset.Builder()
-                    .setData(data)
-                    .optLabels(labels)
-                    .setSampling(namePairs.size(), true)
-                    .build();
-
-            // 2️⃣ **Configure Training**
-            Loss loss = Loss.l2Loss();
-            Tracker tracker = Tracker.fixed(0.001f);
-            Adam optimizer = Adam.builder().optLearningRateTracker(tracker).build();
-            TrainingConfig config = new DefaultTrainingConfig(loss)
-                    .optOptimizer(optimizer)
-                    .optInitializer(new XavierInitializer(), "*");
-
-
-            Criteria<float[][], Float> criteria = Criteria.builder()
-                    .setTypes(float[][].class, Float.class)
-                    .optModelPath(modelPath)
+    /**
+     * Predicts similarity score using ONNX model.
+     */
+    public float predictSimilarity(String name1, String name2) {
+        try {
+            Criteria<float[][], float[]> criteria = Criteria.builder()
+                    .setTypes(float[][].class, float[].class)
+                    .optModelPath(MODEL_PATH)
                     .optEngine("OnnxRuntime")
                     .optTranslator(new NameSimilarityTranslator())
                     .build();
 
-            try (ZooModel<float[][], Float> model = ModelZoo.loadModel(criteria);
-                 Trainer trainer = model.newTrainer(config)) {
+            try (ZooModel<float[][], float[]> model = ModelZoo.loadModel(criteria);
+                 Predictor<float[][], float[]> predictor = model.newPredictor()) {
 
-                trainer.initialize(new Shape(1, 128)); // Input shape
+                float[][] tokenizedNames = tokenizeNames(name1, name2);
+                float[] result = predictor.predict(tokenizedNames);
+                return result[0];  // Similarity score
+            }
 
-                 for (int epoch = 0; epoch < 10; epoch++) { // Train for 10 epochs
-                    for (Batch batch : dataset.getData(manager)) {
-                        EasyTrain.trainBatch(trainer, batch);
-                        trainer.step();
-                        batch.close();
+        } catch (Exception e) {
+            logger.error("Error during prediction: ", e);
+            return -1.0f;
+        }
+    }
+
+    /**
+     * Trains a model using a dataset.
+     */
+    public String trainModel(MultipartFile file) {
+        try {
+            Criteria<float[][], float[]> criteria = Criteria.builder()
+                    .setTypes(float[][].class, float[].class)
+                    .optModelPath(MODEL_PATH)
+                    .optEngine("OnnxRuntime")
+                    .optTranslator(new NameSimilarityTranslator())
+                    .build();
+
+            try (ZooModel<float[][], float[]> model = ModelZoo.loadModel(criteria);
+                 NDManager manager = NDManager.newBaseManager();
+                 Reader reader = new InputStreamReader(file.getInputStream())) {
+
+                List<float[][]> namePairs = new ArrayList<>();
+                List<Float> similarityScores = new ArrayList<>();
+
+                Iterable<CSVRecord> records = CSVFormat.DEFAULT.withFirstRecordAsHeader().parse(reader);
+                for (CSVRecord record : records) {
+                    String name1 = record.get("Name1");
+                    String name2 = record.get("Name2");
+                    float similarity = Float.parseFloat(record.get("Similarity"));
+
+                    float[][] tokenizedNames = tokenizeNames(name1, name2);
+                    namePairs.add(tokenizedNames);
+                    similarityScores.add(similarity);
+                }
+
+                // Ensure data shapes match
+                int batchSize = namePairs.size();
+                int seqLength = namePairs.get(0)[0].length;
+
+                NDArray data = manager.create(new Shape(batchSize, 2, seqLength));
+                NDArray labels = manager.create(new Shape(batchSize, 1));
+
+                for (int i = 0; i < batchSize; i++) {
+                    data.set(new NDList(manager.create(namePairs.get(i))));
+                    labels.set(i, similarityScores.get(i));
+                }
+
+                Dataset dataset = new ArrayDataset.Builder()
+                        .setData(data)
+                        .optLabels(labels)
+                        .setSampling(batchSize, true)
+                        .build();
+
+                // Training configuration
+                Loss loss = Loss.l2Loss();
+                Tracker tracker = Tracker.fixed(0.001f);
+                Adam optimizer = Adam.builder().optLearningRateTracker(tracker).build();
+                TrainingConfig config = new DefaultTrainingConfig(loss).optOptimizer(optimizer);
+
+                try (Trainer trainer = model.newTrainer(config)) {
+                    trainer.initialize(new Shape(1, seqLength));
+
+                    for (int epoch = 0; epoch < 10; epoch++) {
+                        for (Batch batch : dataset.getData(manager)) {
+                            EasyTrain.trainBatch(trainer, batch);
+                            trainer.step();
+                            batch.close();
+                        }
                     }
                 }
 
-
-                model.save(modelPath.getParent(), "trained_name_similarity");
-
+                return "Training complete! Model saved.";
             }
-        }
-        return "Training Complete! Model Saved at: " + modelPath.toString();
-    }
-
-
-    public float predictSimilarity(String name1, String name2) throws IOException, TranslateException, ModelException {
-        Path modelPath = getModelPath();
-        try (NDManager manager = NDManager.newBaseManager()) {
-
-
-            Criteria<float[][], Float> criteria = Criteria.builder()
-                    .setTypes(float[][].class, Float.class)
-                    .optModelPath(modelPath)
-                    .optEngine("OnnxRuntime")
-                    .optTranslator(new NameSimilarityTranslator())
-                    .build();
-
-            try (ZooModel<float[][], Float> model = ModelZoo.loadModel(criteria);
-                 Predictor<float[][], Float> predictor = model.newPredictor()) {
-
-                float[][] input = processInput(name1, name2);
-                return predictor.predict(input);
-            }
+        } catch (Exception e) {
+            logger.error("Error during training: ", e);
+            return "Training failed: " + e.getMessage();
         }
     }
 
-
-    private static class NameSimilarityTranslator implements Translator<float[][], Float> {
+    /**
+     * Translator for ONNX Similarity Model
+     */
+    private static class NameSimilarityTranslator implements Translator<float[][], float[]> {
         @Override
         public NDList processInput(TranslatorContext ctx, float[][] input) {
-            NDManager manager = ctx.getNDManager();
-            return new NDList(manager.create(input));
+            return new NDList(ctx.getNDManager().create(input));
         }
 
         @Override
-        public Float processOutput(TranslatorContext ctx, NDList list) {
-            return list.singletonOrThrow().getFloat();
+        public float[] processOutput(TranslatorContext ctx, NDList list) {
+            return list.singletonOrThrow().toFloatArray();
         }
     }
 }
