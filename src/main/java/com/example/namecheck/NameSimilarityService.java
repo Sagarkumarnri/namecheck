@@ -44,24 +44,20 @@ public class NameSimilarityService {
 
     private static final Logger logger = LoggerFactory.getLogger(NameSimilarityService.class);
 
-    // Paths to ONNX models
+
     private static final Path MODEL_PATH = Paths.get("src/main/resources/paraphrase-MiniLM-L6-v2.onnx");
 
-    /**
-     * Tokenizes input names using a tokenizer (replace with Hugging Face tokenizer if needed).
-     */
+
     private float[][] tokenizeNames(String name1, String name2) throws IOException, TranslateException, ModelException {
         return new float[][]{tokenize(name1), tokenize(name2)};
     }
 
     private float[] tokenize(String name) {
-        // Simulate tokenization
+
         return new float[]{name.length()}; // Dummy tokenization (Replace with real tokenizer)
     }
 
-    /**
-     * Trains the model using a dataset of name pairs and similarity scores.
-     */
+
     public String trainModel(MultipartFile file) {
         try {
             Criteria<float[][], float[]> criteria = Criteria.builder()
@@ -94,12 +90,12 @@ public class NameSimilarityService {
                 List<NDArray> labelList = new ArrayList<>();
 
                 for (int i = 0; i < batchSize; i++) {
-                    dataList.add(manager.create(namePairs.get(i)));  // ✅ Convert float[][] to NDArray
-                    labelList.add(manager.create(new float[]{similarityScores.get(i)}));  // ✅ Convert float to NDArray
+                    dataList.add(manager.create(namePairs.get(i)));
+                    labelList.add(manager.create(new float[]{similarityScores.get(i)}));
                 }
 
-                NDArray data = NDArrays.stack(new NDList(dataList));  // ✅ Corrected stacking
-                NDArray labels = NDArrays.stack(new NDList(labelList));  // ✅ Corrected stacking
+                NDArray data = NDArrays.stack(new NDList(dataList));
+                NDArray labels = NDArrays.stack(new NDList(labelList));
 
                 Dataset dataset = new ArrayDataset.Builder()
                         .setData(data)
@@ -158,9 +154,7 @@ public class NameSimilarityService {
         }
     }
 
-    /**
-     * Translator for ONNX Similarity Model
-     */
+
     private static class NameSimilarityTranslator implements Translator<float[][], float[]> {
         @Override
         public NDList processInput(TranslatorContext ctx, float[][] input) {
