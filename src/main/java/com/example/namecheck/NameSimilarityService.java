@@ -1,172 +1,129 @@
 package com.example.namecheck;
 
-import ai.djl.ModelException;
-import ai.djl.inference.Predictor;
-import ai.djl.ndarray.NDArray;
-import ai.djl.ndarray.NDList;
-import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.NDArrays;
-import ai.djl.ndarray.types.Shape;
-import ai.djl.repository.zoo.Criteria;
-import ai.djl.repository.zoo.ModelZoo;
-import ai.djl.repository.zoo.ZooModel;
-import ai.djl.training.DefaultTrainingConfig;
-import ai.djl.training.EasyTrain;
-import ai.djl.training.Trainer;
-import ai.djl.training.TrainingConfig;
-import ai.djl.training.dataset.ArrayDataset;
-import ai.djl.training.dataset.Batch;
-import ai.djl.training.dataset.Dataset;
-import ai.djl.training.loss.Loss;
-import ai.djl.training.optimizer.Adam;
-import ai.djl.training.tracker.Tracker;
-import ai.djl.translate.TranslateException;
-import ai.djl.translate.Translator;
-import ai.djl.translate.TranslatorContext;
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
-
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
+import smile.regression.LinearModel;
+import smile.regression.OLS;
+import smile.nlp.tokenizer.SimpleTokenizer;
+import smile.data.DataFrame;
+import smile.data.Tuple;
+import smile.data.vector.DoubleVector;
+import smile.data.vector.IntVector;
+import smile.data.formula.Formula;
+import java.util.*;
+import java.util.stream.Collectors;
+import org.apache.commons.math3.linear.*;
 
 @Service
+
 public class NameSimilarityService {
-
-    private static final Logger logger = LoggerFactory.getLogger(NameSimilarityService.class);
-
-
-    private static final Path MODEL_PATH = Paths.get("src/main/resources/paraphrase-MiniLM-L6-v2.onnx");
-
-
-    private float[][] tokenizeNames(String name1, String name2) throws IOException, TranslateException, ModelException {
-        return new float[][]{tokenize(name1), tokenize(name2)};
-    }
-
-    private float[] tokenize(String name) {
-
-        return new float[]{name.length()}; // Dummy tokenization (Replace with real tokenizer)
-    }
-
-
-    public String trainModel(MultipartFile file) {
-        try {
-            Criteria<float[][], float[]> criteria = Criteria.builder()
-                    .setTypes(float[][].class, float[].class)
-                    .optModelPath(MODEL_PATH)
-                    .optEngine("OnnxRuntime")
-                    .optTranslator(new NameSimilarityTranslator())
-                    .build();
-
-            try (ZooModel<float[][], float[]> model = ModelZoo.loadModel(criteria);
-                 NDManager manager = NDManager.newBaseManager();
-                 Reader reader = new InputStreamReader(file.getInputStream())) {
-
-                List<float[][]> namePairs = new ArrayList<>();
-                List<Float> similarityScores = new ArrayList<>();
-
-                Iterable<CSVRecord> records = CSVFormat.DEFAULT.withFirstRecordAsHeader().parse(reader);
-                for (CSVRecord record : records) {
-                    String name1 = record.get("Name1");
-                    String name2 = record.get("Name2");
-                    float similarity = Float.parseFloat(record.get("Similarity"));
-
-                    float[][] tokenizedNames = tokenizeNames(name1, name2);
-                    namePairs.add(tokenizedNames);
-                    similarityScores.add(similarity);
-                }
-
-                int batchSize = namePairs.size();
-                List<NDArray> dataList = new ArrayList<>();
-                List<NDArray> labelList = new ArrayList<>();
-
-                for (int i = 0; i < batchSize; i++) {
-                    dataList.add(manager.create(namePairs.get(i)));
-                    labelList.add(manager.create(new float[]{similarityScores.get(i)}));
-                }
-
-                NDArray data = NDArrays.stack(new NDList(dataList));
-                NDArray labels = NDArrays.stack(new NDList(labelList));
-
-                Dataset dataset = new ArrayDataset.Builder()
-                        .setData(data)
-                        .optLabels(labels)
-                        .setSampling(batchSize, true)
-                        .build();
-
-                Loss loss = Loss.l2Loss();
-                Tracker tracker = Tracker.fixed(0.001f);
-                Adam optimizer = Adam.builder().optLearningRateTracker(tracker).build();
-                TrainingConfig config = new DefaultTrainingConfig(loss).optOptimizer(optimizer);
-
-                try (Trainer trainer = model.newTrainer(config)) {
-                    trainer.initialize(new Shape(1, namePairs.get(0)[0].length));
-
-                    for (int epoch = 0; epoch < 10; epoch++) {
-                        for (Batch batch : dataset.getData(manager)) {
-                            EasyTrain.trainBatch(trainer, batch);
-                            trainer.step();
-                            batch.close();
-                        }
-                    }
-                }
-
-                return "Training complete! Model saved.";
-            }
-        } catch (Exception e) {
-            logger.error("Error during training: ", e);
-            return "Training failed: " + e.getMessage();
-        }
+    private LinearModel model;
+    private Map<String, Integer> vocabulary;
+    private Map<String, Double> idfScores;
+    public NameSimilarityService() {
+        this.vocabulary = new HashMap<>();
+        this.idfScores = new HashMap<>();
     }
 
     /**
-     * Predicts similarity between two names using the ONNX model.
+     * Train the model using a dataset of name pairs and similarity scores (0-100%).
      */
-    public float predictSimilarity(String name1, String name2) {
-        try {
-            Criteria<float[][], float[]> criteria = Criteria.builder()
-                    .setTypes(float[][].class, float[].class)
-                    .optModelPath(MODEL_PATH)
-                    .optEngine("OnnxRuntime")
-                    .optTranslator(new NameSimilarityTranslator())
-                    .build();
+    public String trainModel(List<String[]> namePairs, List<Double> similarityScores) {
+        buildVocabulary(namePairs);
+        List<double[]> featureList = new ArrayList<>();
 
-            try (ZooModel<float[][], float[]> model = ModelZoo.loadModel(criteria);
-                 Predictor<float[][], float[]> predictor = model.newPredictor()) {
+        for (String[] pair : namePairs) {
+            featureList.add(computeTFIDF(pair[0], pair[1]));
+        }
 
-                float[][] tokenizedNames = tokenizeNames(name1, name2);
-                float[] result = predictor.predict(tokenizedNames);
-                return result[0];
+        double[][] featureMatrix = featureList.toArray(new double[0][]);
+        double[] labelArray = similarityScores.stream().mapToDouble(i -> i).toArray();
+
+        // Convert featureMatrix and labelArray to DataFrame
+        DataFrame df = DataFrame.of(
+                DoubleVector.of("label", labelArray),
+                DoubleVector.of("features", Arrays.stream(featureMatrix).mapToDouble(f -> f[1]).toArray())
+
+        );
+
+        // Fit the model using Formula
+        model = OLS.fit(Formula.lhs("label"), df);
+        return "Training complete!";
+    }
+
+    /**
+     * Predict similarity between two names as a percentage (0-100%).
+     */
+    public double predictSimilarity(String name1, String name2) {
+        if (model == null) {
+            throw new IllegalStateException("Model is not trained.");
+        }
+        double[] features = computeTFIDF(name1, name2);
+        double prediction = model.predict(features);
+        return Math.max(0, Math.min(100, prediction)); // Ensure range 0-100%
+    }
+
+    private void buildVocabulary(List<String[]> namePairs) {
+        Set<String> allWords = new HashSet<>();
+        Map<String, Integer> documentFrequency = new HashMap<>();
+
+        for (String[] pair : namePairs) {
+            Set<String> uniqueWords = new HashSet<>();
+            for (String name : pair) {
+                String[] words = tokenize(name);
+                allWords.addAll(Arrays.asList(words));
+                uniqueWords.addAll(Arrays.asList(words));
             }
+            for (String word : uniqueWords) {
+                documentFrequency.put(word, documentFrequency.getOrDefault(word, 0) + 1);
+            }
+        }
 
-        } catch (Exception e) {
-            logger.error("Error during prediction: ", e);
-            return -1.0f;
+        int totalDocuments = namePairs.size();
+        vocabulary = allWords.stream()
+                .collect(Collectors.toMap(word -> word, word -> vocabulary.size()));
+
+        for (String word : vocabulary.keySet()) {
+            int df = documentFrequency.getOrDefault(word, 1);
+            idfScores.put(word, Math.log((double) totalDocuments / df));
         }
     }
 
+    private double[] computeTFIDF(String name1, String name2) {
+        double[] tfidf1 = computeTFIDFVector(name1);
+        double[] tfidf2 = computeTFIDFVector(name2);
+        double cosineSimilarity = cosineSimilarity(tfidf1, tfidf2);
 
-    private static class NameSimilarityTranslator implements Translator<float[][], float[]> {
-        @Override
-        public NDList processInput(TranslatorContext ctx, float[][] input) {
-            NDManager manager = ctx.getNDManager();
-            NDArray array = manager.create(input);
-            return new NDList(array);
+        double[] featureVector = Arrays.copyOf(tfidf1, tfidf1.length + 1);
+        featureVector[tfidf1.length] = cosineSimilarity;
+        return featureVector;
+    }
+
+    private double[] computeTFIDFVector(String name) {
+        String[] words = tokenize(name);
+        Map<String, Integer> termFreq = new HashMap<>();
+
+        for (String word : words) {
+            termFreq.put(word, termFreq.getOrDefault(word, 0) + 1);
         }
 
-        @Override
-        public float[] processOutput(TranslatorContext ctx, NDList list) {
-            NDArray output = list.singletonOrThrow();
-            return output.toFloatArray();
+        double[] vector = new double[vocabulary.size()];
+        for (String word : termFreq.keySet()) {
+            if (vocabulary.containsKey(word)) {
+                int index = vocabulary.get(word);
+                vector[index] = termFreq.get(word) * idfScores.getOrDefault(word, 0.0);
+            }
         }
+        return vector;
+    }
+
+    private double cosineSimilarity(double[] vec1, double[] vec2) {
+        RealVector v1 = new ArrayRealVector(vec1);
+        RealVector v2 = new ArrayRealVector(vec2);
+        return v1.dotProduct(v2) / (v1.getNorm() * v2.getNorm());
+    }
+
+    private String[] tokenize(String text) {
+        SimpleTokenizer tokenizer = new SimpleTokenizer();
+        return tokenizer.split(text.toLowerCase());
     }
 }

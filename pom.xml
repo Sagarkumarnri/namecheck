@@ -35,46 +35,52 @@
 			<artifactId>spring-boot-starter-web</artifactId>
 		</dependency>
 
-		<!-- DJL API -->
-		<dependency>
-			<groupId>ai.djl</groupId>
-			<artifactId>api</artifactId>
-			<version>0.26.0</version>
-		</dependency>
 
-		<!-- DJL ONNX Runtime Engine -->
+			<dependency>
+				<groupId>org.apache.commons</groupId>
+				<artifactId>commons-csv</artifactId>
+				<version>1.9.0</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.commons</groupId>
+				<artifactId>commons-math3</artifactId>
+				<version>3.6.1</version>
+			</dependency>
+			<dependency>
+				<groupId>com.github.haifengl</groupId>
+				<artifactId>smile-core</artifactId>
+				<version>3.0.1</version>
+			</dependency>
+			<dependency>
+				<groupId>com.github.haifengl</groupId>
+				<artifactId>smile-nlp</artifactId>
+				<version>3.0.1</version>
+			</dependency>
 		<dependency>
-			<groupId>ai.djl.onnxruntime</groupId>
-			<artifactId>onnxruntime-engine</artifactId>
-			<version>0.26.0</version>
-		</dependency>
-
-		<!-- DJL Model Zoo -->
-		<dependency>
-			<groupId>ai.djl</groupId>
-			<artifactId>model-zoo</artifactId>
-			<version>0.26.0</version>
-		</dependency>
-
-		<!-- Apache Commons CSV for Data Handling -->
-		<dependency>
-			<groupId>org.apache.commons</groupId>
-			<artifactId>commons-csv</artifactId>
-			<version>1.9.0</version>
-		</dependency>
-
-		<!-- Spring Boot Test Dependencies -->
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-test</artifactId>
+			<groupId>junit</groupId>
+			<artifactId>junit</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
-			<groupId>ai.djl.huggingface</groupId>
-			<artifactId>tokenizers</artifactId>
-			<version>0.20.0</version>
+		<groupId>org.bytedeco</groupId>
+		<artifactId>openblas</artifactId>
+		<version>0.3.13-1.5.6</version>
+	</dependency>
+
+		<dependency>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-test</artifactId>
+		<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
 		</dependency>
 	</dependencies>
+
+
+
 
 
 	<build>
